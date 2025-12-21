@@ -28,6 +28,6 @@ def test_arbiter_wrr_lock_hidden_runner():
 
     runner.test(
         hdl_toplevel="arbiter_wrr_lock",
-        test_module="test_arbiter_wrr_lock", 
+        test_module="test_arbiter_wrr_lock_hidden", 
         waves=True 
     )

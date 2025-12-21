@@ -281,26 +281,3 @@ async def test_07_randomized_stress(dut):
             dut._log.error(f"Model State: Ptr={model.rr_ptr} Cnt={model.counter}")
             
         assert actual == expected
-
-# -----------------------------------------------------------------------------
-# RUNNER
-# -----------------------------------------------------------------------------
-
-def test_arbiter_hidden_runner():
-    """Pytest wrapper."""
-    sim = os.getenv("SIM", "icarus")
-    proj_path = Path(__file__).resolve().parent.parent
-    sources = [proj_path / "sources/arbiter_wrr_lock.sv"]
-
-    runner = get_runner(sim)
-    runner.build(
-        sources=sources,
-        hdl_toplevel="arbiter_wrr_lock",
-        always=True,
-    )
-
-    runner.test(
-        hdl_toplevel="arbiter_wrr_lock",
-        test_module="test_arbiter_hidden", 
-        waves=True 
-    )
