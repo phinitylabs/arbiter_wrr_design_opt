@@ -7,7 +7,7 @@ This module implements a Weighted Round Robin (WRR) arbiter with atomic lock sup
 ## 2. Interface
 
 ### Parameters
-- `NUM_CLIENTS`: Number of clients (default: 4)
+- `NUM_CLIENTS`: Number of clients (default: 4), always a power of 2
 - `WEIGHT_WIDTH`: Width of weight values in bits (default: 4)
 
 ### Inputs
@@ -77,6 +77,4 @@ The implementation should aim to:
 - Achieve at least 5% reduction in resource usage compared to baseline
 - Maintain functional correctness across all scenarios
 - Avoid unnecessary state registers or combinational logic
-
-
 
