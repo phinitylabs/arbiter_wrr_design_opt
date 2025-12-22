@@ -11,7 +11,7 @@ module arbiter_wrr_lock #(
     input  wire [NUM_CLIENTS-1:0]           i_req,
     input  wire [NUM_CLIENTS-1:0]           i_lock,
     
-    // Configuration (Packed: [Client N-1 | ... | Client 0])
+    // Configuration (Packed array)
     input  wire [NUM_CLIENTS*WEIGHT_WIDTH-1:0] i_weight,
     
     // Output Grant (One-Hot)
@@ -19,7 +19,7 @@ module arbiter_wrr_lock #(
 );
 
     // -------------------------------------------------------------------------
-    // Parameters & Helper Functions
+    // Helper Functions
     // -------------------------------------------------------------------------
     function integer clog2;
         input integer value;
@@ -35,107 +35,114 @@ module arbiter_wrr_lock #(
     // -------------------------------------------------------------------------
     // Internal State
     // -------------------------------------------------------------------------
-    reg [PTR_WIDTH-1:0]    ptr_q;      // Pointer to current or last owner
-    reg [WEIGHT_WIDTH-1:0] weight_q;   // Current weight counter
-    reg                    active_q;   // 1 if a client actively holds grant
+    reg [PTR_WIDTH-1:0]    ptr_q;      // Pointer to current owner
+    reg [WEIGHT_WIDTH-1:0] weight_q;   // Weight counter
+    reg                    active_q;   // Active transaction flag
 
     // -------------------------------------------------------------------------
-    // Combinational Logic Variables
+    // Combinational Logic Signals
     // -------------------------------------------------------------------------
-    reg                    next_active;
     reg [PTR_WIDTH-1:0]    next_ptr;
-    reg [WEIGHT_WIDTH-1:0] next_weight;
+    reg                    next_active;
     reg                    load_weight;
     
-    // Variable for loop
+    // Rotated request vector for simple priority encoding
+    wire [NUM_CLIENTS-1:0] req_rotated;
+    wire [NUM_CLIENTS-1:0] req_masked;
+    
+    // -------------------------------------------------------------------------
+    // 1. Double-Request masking (Replaces barrel shifter)
+    // -------------------------------------------------------------------------
+    // We concatenate i_req to itself to simulate the "wrap around" search.
+    // We mask out bits lower than (ptr_q + 1) to force search to start AFTER current.
+    wire [2*NUM_CLIENTS-1:0] double_req = {i_req, i_req};
+    
+    // Mask out bits <= ptr_q in the lower half to strictly enforce round-robin
+    wire [2*NUM_CLIENTS-1:0] search_mask = {NUM_CLIENTS{1'b1}} << (ptr_q + 1'b1);
+    wire [2*NUM_CLIENTS-1:0] masked_req  = double_req & search_mask;
+
+    // -------------------------------------------------------------------------
+    // 2. Priority Encoder (Find First Set)
+    // -------------------------------------------------------------------------
+    // Finds the first '1' in the masked vector. Because we use a 2*N vector,
+    // the result naturally handles the wrap-around case.
     integer i;
+    reg [PTR_WIDTH:0] found_offset; // 1 bit wider to handle "no match"
+    reg               found_any;
 
-    // -------------------------------------------------------------------------
-    // Next State Logic
-    // -------------------------------------------------------------------------
     always @(*) begin
-        // Defaults
-        next_active = active_q;
-        next_ptr    = ptr_q;
-        next_weight = weight_q;
-        load_weight = 1'b0;
-
-        // 1. Check if current owner maintains the grant
-        // --------------------------------------------
-        if (active_q && i_req[ptr_q]) begin
-            // Locked by client OR Weight credits remaining
-            if (i_lock[ptr_q] || (weight_q > 0)) begin
-                // Maintain current state
-                next_active = 1'b1;
-                next_ptr    = ptr_q;
-                
-                // Decrement weight if not locked (and weight > 0)
-                // Note: Spec says "While locked, weight counter decrements normally"
-                if (weight_q > 0) begin
-                    next_weight = weight_q - 1'b1;
-                end
-            end else begin
-                // Grant expired
-                next_active = 1'b0; 
+        found_offset = '0;
+        found_any    = 1'b0;
+        
+        // Scan limited range: from (ptr+1) up to (ptr+N)
+        for (i = 0; i < NUM_CLIENTS; i = i + 1) begin
+            if (masked_req[ptr_q + 1 + i]) begin
+                found_offset = ptr_q + 1 + i; // Absolute index in double_req
+                found_any    = 1'b1;
+                // Break loop simulation (synthesis ignores 'break' but honors logic)
+                i = NUM_CLIENTS; 
             end
-        end else begin
-            // Request dropped or was already idle
-            next_active = 1'b0;
-        end
-
-        // 2. Arbitration Search (If not maintaining current)
-        // --------------------------------------------------
-        if (!next_active) begin
-            // Search for the next request starting from (ptr_q + 1).
-            // We iterate NUM_CLIENTS times. The standard "Double Request" 
-            // logic is effectively implemented here via the loop and modulo.
-            
-            for (i = 1; i <= NUM_CLIENTS; i = i + 1) begin
-                // Calculate index with wrap-around logic
-                // Using intermediate int ensures cleaner synthesis than % operator
-                integer idx;
-                idx = ptr_q + i;
-                if (idx >= NUM_CLIENTS) idx = idx - NUM_CLIENTS;
-
-                // Priority Check
-                // If we found a request, update next state and break the search
-                // (Note: 'next_active' is currently 0, acts as 'found' flag)
-                if (i_req[idx] && !next_active) begin
-                    next_ptr    = idx[PTR_WIDTH-1:0];
-                    next_active = 1'b1;
-                    load_weight = 1'b1;
-                end
-            end
-        end
-
-        // 3. Weight Loading (If switching to new client)
-        // ----------------------------------------------
-        if (load_weight) begin
-            // Indexed Part-Select to extract weight
-            next_weight = i_weight[next_ptr * WEIGHT_WIDTH +: WEIGHT_WIDTH];
         end
     end
 
     // -------------------------------------------------------------------------
-    // Sequential Update
+    // 3. Next State Logic
+    // -------------------------------------------------------------------------
+    always @(*) begin
+        // Defaults: Hold state
+        next_ptr    = ptr_q;
+        next_active = active_q;
+        load_weight = 1'b0;
+
+        // A. Check if current owner keeps grant
+        if (active_q && i_req[ptr_q]) begin
+            if (i_lock[ptr_q] || (|weight_q)) begin
+                next_active = 1'b1;
+            end else begin
+                next_active = 1'b0; // Time expired
+            end
+        end else begin
+            next_active = 1'b0; // Request dropped or idle
+        end
+
+        // B. Search for new owner (if not keeping current)
+        if (!next_active) begin
+            if (found_any) begin
+                // Modulo arithmetic is automatic if we just take lower bits
+                // because NUM_CLIENTS is power-of-2.
+                next_ptr    = found_offset[PTR_WIDTH-1:0];
+                next_active = 1'b1;
+                load_weight = 1'b1;
+            end
+        end
+    end
+
+    // -------------------------------------------------------------------------
+    // 4. Sequential Update
     // -------------------------------------------------------------------------
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             active_q <= 1'b0;
-            // Reset to N-1 so first search (ptr+1) checks Client 0
-            ptr_q    <= NUM_CLIENTS[PTR_WIDTH-1:0] - 1'b1; 
-            weight_q <= {WEIGHT_WIDTH{1'b0}};
+            ptr_q    <= {PTR_WIDTH{1'b1}}; // N-1 (all 1s)
+            weight_q <= '0;
         end else begin
-            active_q <= next_active;
             ptr_q    <= next_ptr;
-            weight_q <= next_weight;
+            active_q <= next_active;
+
+            // Weight Logic
+            if (active_q && next_active && (ptr_q == next_ptr)) begin
+                // Decrement if holding and valid
+                if (|weight_q) weight_q <= weight_q - 1'b1;
+            end else if (load_weight) begin
+                // Load new weight
+                weight_q <= i_weight[next_ptr*WEIGHT_WIDTH +: WEIGHT_WIDTH];
+            end
         end
     end
 
     // -------------------------------------------------------------------------
-    // Output Logic
+    // 5. Output Logic (Combinational)
     // -------------------------------------------------------------------------
-    // Decode the binary pointer to one-hot grant
-    assign o_gnt = active_q ? ({{(NUM_CLIENTS-1){1'b0}}, 1'b1} << ptr_q) : {NUM_CLIENTS{1'b0}};
+    assign o_gnt = active_q ? (1'b1 << ptr_q) : {NUM_CLIENTS{1'b0}};
 
 endmodule
