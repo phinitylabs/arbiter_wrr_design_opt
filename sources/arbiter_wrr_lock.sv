@@ -1,57 +1,72 @@
 `timescale 1ns/1ps
 
 module arbiter_wrr_lock #(
-    parameter int NUM_CLIENTS  = 4,
-    parameter int WEIGHT_WIDTH = 4
+    parameter NUM_CLIENTS  = 4,
+    parameter WEIGHT_WIDTH = 4
 ) (
-    input  wire                                         clk,
-    input  wire                                         rst_n,
+    input  wire                        clk,
+    input  wire                        rst_n,
     
     // Client Interface
-    input  wire [NUM_CLIENTS-1:0]                       i_req,
-    input  wire [NUM_CLIENTS-1:0]                       i_lock,
+    input  wire [NUM_CLIENTS-1:0]      i_req,
+    input  wire [NUM_CLIENTS-1:0]      i_lock,
     
-    // Configuration (Packed array)
+    // Configuration (Packed array flattened)
     // Format: [ (CLIENT_N_W).. | .. | (CLIENT_1_W) | (CLIENT_0_W) ]
-    input  wire [NUM_CLIENTS*WEIGHT_WIDTH-1:0]          i_weight,
+    input  wire [NUM_CLIENTS*WEIGHT_WIDTH-1:0] i_weight,
     
     // Output Grant (One-Hot)
-    output logic [NUM_CLIENTS-1:0]                      o_gnt
+    output wire [NUM_CLIENTS-1:0]      o_gnt
 );
+
+    // -------------------------------------------------------------------------
+    // Helper Functions
+    // -------------------------------------------------------------------------
+    // Standard log2 function for width calculation
+    function integer clog2;
+        input integer value;
+        begin
+            value = value - 1;
+            for (clog2 = 0; value > 0; clog2 = clog2 + 1)
+                value = value >> 1;
+        end
+    endfunction
+
+    localparam PTR_WIDTH = clog2(NUM_CLIENTS);
 
     // -------------------------------------------------------------------------
     // Signal Declarations
     // -------------------------------------------------------------------------
     
-    // Use Packed Array for weight storage
-    logic [NUM_CLIENTS-1:0][WEIGHT_WIDTH-1:0] weight_packed;
-    
     // State Registers
-    logic [NUM_CLIENTS-1:0]          current_gnt;
-    logic [$clog2(NUM_CLIENTS)-1:0]  current_ptr;
-    logic [WEIGHT_WIDTH-1:0]         weight_cnt;
-    logic                            is_active;
+    reg [NUM_CLIENTS-1:0]      current_gnt;
+    reg [PTR_WIDTH-1:0]        current_ptr;
+    reg [WEIGHT_WIDTH-1:0]     weight_cnt;
+    reg                        is_active;
 
-    // Next State Logic
-    logic                            keep_current;
-    logic                            found_next;
-    logic [$clog2(NUM_CLIENTS)-1:0]  next_ptr_search;
-    logic [NUM_CLIENTS-1:0]          next_gnt_search;
+    // Next State / Combinational Logic
+    reg                        keep_current;
+    reg                        found_next;
+    reg [PTR_WIDTH-1:0]        next_ptr_search;
+    reg [NUM_CLIENTS-1:0]      next_gnt_search;
     
     // Combinational Weight Mux
-    logic [WEIGHT_WIDTH-1:0]         next_weight_val;
+    reg [WEIGHT_WIDTH-1:0]     next_weight_val;
 
-    // -------------------------------------------------------------------------
-    // Weight Alias
-    // -------------------------------------------------------------------------
-    assign weight_packed = i_weight;
+    // Loop variables
+    integer i;
+    integer idx;
+    reg     already_found;
+    integer weight_idx_base;
 
     // -------------------------------------------------------------------------
     // Arbitration Logic
     // -------------------------------------------------------------------------
 
     // 1. Check if the Current Owner keeps the grant
-    always_comb begin
+    always @(*) begin
+        keep_current = 1'b0; // Default
+
         if (is_active && i_req[current_ptr]) begin
             // Check Lock (Spec 3.3): Only valid if held by current owner
             if (i_lock[current_ptr]) begin
@@ -70,53 +85,50 @@ module arbiter_wrr_lock #(
     end
 
     // 2. Round Robin Search (Forward Loop with Flag)
-    // We scan from CLOSEST (current_ptr + 1) to FURTHEST.
-    // We capture the FIRST match using the 'already_found' flag logic.
-    // This avoids 'break' while ensuring strict priority.
-    always_comb begin
-        logic already_found; 
-        
+    always @(*) begin
         found_next      = 1'b0;
-        next_ptr_search = '0;
-        next_gnt_search = '0;
+        next_ptr_search = {PTR_WIDTH{1'b0}};
+        next_gnt_search = {NUM_CLIENTS{1'b0}};
         already_found   = 1'b0;
+        idx             = 0;
         
-        for (int i = 1; i <= NUM_CLIENTS; i++) begin
+        // Scan from CLOSEST (current_ptr + 1) to FURTHEST
+        for (i = 1; i <= NUM_CLIENTS; i = i + 1) begin
             // Calculate candidate index with manual wrap-around
-            int idx;
-            idx = int'(current_ptr) + i;
+            idx = current_ptr + i;
             if (idx >= NUM_CLIENTS) begin
                 idx = idx - NUM_CLIENTS;
             end
             
             // If request exists AND we haven't found a closer one yet
             if (i_req[idx] && !already_found) begin
-                found_next           = 1'b1;
-                next_ptr_search      = idx[$clog2(NUM_CLIENTS)-1:0];
+                found_next        = 1'b1;
+                next_ptr_search   = idx[PTR_WIDTH-1:0];
                 
-                next_gnt_search      = '0;
+                next_gnt_search   = {NUM_CLIENTS{1'b0}};
                 next_gnt_search[idx] = 1'b1;
                 
-                already_found        = 1'b1; // Lock the decision
+                already_found     = 1'b1; // Lock the decision
             end
         end
     end
     
-    // 3. Weight Mux (Resolves "Constant Selects" error in Icarus)
-    // Extract the weight for the *next* winner combinationally
-    always_comb begin
-        next_weight_val = weight_packed[next_ptr_search];
+    // 3. Weight Mux 
+    // Uses Verilog-2001 Indexed Part-Select [base +: width]
+    always @(*) begin
+        weight_idx_base = next_ptr_search * WEIGHT_WIDTH;
+        next_weight_val = i_weight[weight_idx_base +: WEIGHT_WIDTH];
     end
 
     // -------------------------------------------------------------------------
     // Sequential State Update
     // -------------------------------------------------------------------------
-    always_ff @(posedge clk or negedge rst_n) begin
+    always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            current_gnt <= '0;
+            current_gnt <= {NUM_CLIENTS{1'b0}};
             // Initialize to N-1 so the first search (ptr+1) checks Client 0 first.
-            current_ptr <= NUM_CLIENTS[$clog2(NUM_CLIENTS)-1:0] - 1'b1;
-            weight_cnt  <= '0;
+            current_ptr <= NUM_CLIENTS[PTR_WIDTH-1:0] - 1'b1;
+            weight_cnt  <= {WEIGHT_WIDTH{1'b0}};
             is_active   <= 1'b0;
         end else begin
             if (keep_current) begin
@@ -136,7 +148,7 @@ module arbiter_wrr_lock #(
                     is_active   <= 1'b1;
                 end else begin
                     // No requests: Go Idle
-                    current_gnt <= '0;
+                    current_gnt <= {NUM_CLIENTS{1'b0}};
                     is_active   <= 1'b0;
                 end
             end
@@ -144,4 +156,5 @@ module arbiter_wrr_lock #(
     end
 
     assign o_gnt = current_gnt;
+
 endmodule
