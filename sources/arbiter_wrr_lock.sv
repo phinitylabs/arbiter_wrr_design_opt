@@ -143,6 +143,6 @@ module arbiter_wrr_lock #(
     // -------------------------------------------------------------------------
     // 5. Output Logic (Combinational)
     // -------------------------------------------------------------------------
-    assign o_gnt = active_q ? (1'b1 << ptr_q) : {NUM_CLIENTS{1'b0}};
+    assign o_gnt = active_q ? ({{(NUM_CLIENTS-1){1'b0}}, 1'b1} << ptr_q) : {NUM_CLIENTS{1'b0}};
 
 endmodule
