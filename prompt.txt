@@ -1,3 +1,3 @@
 Optimize the given systemverilog RTL module for Weighted Round Robin Arbiter with Atomic Lock Support in the sources folder. Specification for the same is given in the `Specification.md` in the docs folder.
 
-The resource utilization should be reduced by atleast 5%.
+The resource utilization should be reduced by atleast 10% for total cells while maintaining functionality.
