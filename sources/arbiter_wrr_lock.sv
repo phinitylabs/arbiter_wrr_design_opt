@@ -32,14 +32,14 @@ module arbiter_wrr_lock #(
         end
     endfunction
 
-    localparam PTR_WIDTH = clog2(NUM_CLIENTS*2);
+    localparam PTR_WIDTH = clog2(NUM_CLIENTS);
 
     // -------------------------------------------------------------------------
     // Signal Declarations
     // -------------------------------------------------------------------------
     
     // State Registers
-    reg [NUM_CLIENTS*2-1:0]      current_gnt;
+    reg [NUM_CLIENTS-1:0]      current_gnt;
     reg [PTR_WIDTH-1:0]        current_ptr;
     reg [WEIGHT_WIDTH-1:0]     weight_cnt;
     reg                        is_active;
@@ -156,4 +156,5 @@ module arbiter_wrr_lock #(
     end
 
     assign o_gnt = current_gnt;
+
 endmodule
