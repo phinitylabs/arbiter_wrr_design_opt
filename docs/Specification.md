@@ -74,7 +74,7 @@ For example, with NUM_CLIENTS=4 and WEIGHT_WIDTH=4:
 
 The implementation should aim to:
 - Minimize resource utilization (LUTs, registers)
-- Achieve at least 5% reduction in resource usage compared to baseline
+- Achieve at least 67% reduction in resource usage compared to baseline
 - Maintain functional correctness across all scenarios
 - Avoid unnecessary state registers or combinational logic
 
